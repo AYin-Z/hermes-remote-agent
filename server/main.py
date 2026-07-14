@@ -1,7 +1,5 @@
+"""Hermes Remote Agent — WS + MCP on single port"""
 
-"""Hermes Remote Agent Server - FastAPI + WebSocket Hub"""
-
-from __future__ import annotations
 import os, sys, logging
 from contextlib import asynccontextmanager
 
@@ -11,7 +9,7 @@ from ws_hub import Hub
 from mcp_tools import mcp, bind
 
 if len(sys.argv) < 2:
-    print("Usage: python3 main.py <auth>", file=sys.stderr)
+    print("Usage: python3 main.py <auth_token>", file=sys.stderr)
     sys.exit(1)
 T = sys.argv[1]
 
@@ -30,10 +28,13 @@ db = DB()
 hub = Hub(db, token=T)
 bind(hub, db)
 
+# Create MCP ASGI app ONCE
+MCP_APP = mcp.streamable_http_app()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"WS Server on {HOST}:{WS_PORT}")
+    logger.info(f"Server on {HOST}:{WS_PORT}")
     db.mark_all_offline()
     await hub.start_heartbeat()
     yield
@@ -52,6 +53,39 @@ async def agent_ws(ws: WebSocket):
 async def health():
     return {"status": "ok", "agents_online": hub.online_count,
             "agents_registered": len(db.list_agents())}
+
+
+# ASGI middleware to route /mcp/* to MCP_APP
+@app.middleware("http")
+async def mcp_middleware(request, call_next):
+    if request.url.path.startswith("/mcp"):
+        from starlette.responses import Response
+        scope = dict(request.scope)
+        scope["path"] = "/mcp"
+        scope["raw_path"] = b"/mcp"
+
+        body = b""
+        status = [200]
+        headers = []
+
+        async def recv():
+            return {"type": "http.request", "body": await request.body(), "more_body": False}
+
+        async def send(msg):
+            nonlocal body
+            if msg["type"] == "http.response.start":
+                status[0] = msg["status"]
+                headers.clear()
+                for k, v in msg.get("headers", []):
+                    headers.append((k.decode() if isinstance(k, bytes) else k,
+                                   v.decode() if isinstance(v, bytes) else v))
+            elif msg["type"] == "http.response.body":
+                body += msg.get("body", b"")
+
+        await MCP_APP(scope, recv, send)
+        return Response(content=body, status_code=status[0], headers=dict(headers))
+
+    return await call_next(request)
 
 
 if __name__ == "__main__":

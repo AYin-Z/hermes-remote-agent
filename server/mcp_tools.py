@@ -30,7 +30,7 @@ from db import DB
 
 logger = logging.getLogger("mcp_tools")
 
-mcp = FastMCP("hermes-remote-agent", log_level="WARNING")
+mcp = FastMCP("hermes-remote-agent", host="127.0.0.1", port=8086, log_level="WARNING")
 
 
 def bind(hub: Hub, db: DB) -> None:
