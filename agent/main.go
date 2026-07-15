@@ -2,6 +2,8 @@
 //
 // Build: go build -ldflags "-X main.ServerURL=wss://... -X main.AuthToken=xxx"
 // Cross: GOOS=windows GOARCH=amd64 go build -o agent.exe
+//
+// On Windows, runs as console app or Windows service (auto-detect).
 
 package main
 
@@ -13,10 +15,10 @@ import (
 	"runtime"
 	"syscall"
 
-	"hermes-remote-agent/protocol"
-	"hermes-remote-agent/ws"
 	"hermes-remote-agent/exec"
+	"hermes-remote-agent/protocol"
 	"hermes-remote-agent/sysinfo"
+	"hermes-remote-agent/ws"
 )
 
 // ── ldflags 注入 ──
@@ -28,15 +30,27 @@ var (
 )
 
 var (
-	flagServer = flag.String("server", ServerURL, "WebSocket server URL")
-	flagToken  = flag.String("token", AuthToken, "Auth token")
-	flagName   = flag.String("name", AgentName, "Agent hostname")
+	flagServer  = flag.String("server", ServerURL, "WebSocket server URL")
+	flagToken   = flag.String("token", AuthToken, "Auth token")
+	flagName    = flag.String("name", AgentName, "Agent hostname (default: system hostname)")
+	flagConsole = flag.Bool("console", false, "Force console mode (don't run as service)")
 )
 
 func main() {
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
+	// Windows: detect service mode
+	if isWindowsService() && !*flagConsole {
+		runServiceMain()
+		return
+	}
+
+	// Console mode
+	runConsoleAgent()
+}
+
+func runConsoleAgent() {
 	hostname := *flagName
 	if hostname == "" {
 		h, _ := os.Hostname()
@@ -53,14 +67,13 @@ func main() {
 
 	log.Printf("Agent %s (%s/%s) → %s", info.Hostname, info.OS, info.Arch, *flagServer)
 
-	// 注册命令处理器
 	client := ws.NewClient(ws.Config{
 		ServerURL: *flagServer,
 		Token:     *flagToken,
 		AgentInfo: info,
 		Handlers: ws.MessageHandlers{
 			Exec:       exec.HandleExec,
-			Screenshot: exec.HandleScreenshot,  // will be replaced by screen on Windows
+			Screenshot: exec.HandleScreenshot,
 			Processes:  exec.HandleProcesses,
 			SysInfoFn:  sysinfo.Collect,
 			UploadFn:   exec.HandleUpload,
